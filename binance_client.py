@@ -1,42 +1,43 @@
 """
-binance_client.py — Binance Testnet + Public API İstemcisi
-===========================================================
-Klines: api.binance.com (public, key gerektirmez)
-Demo Trade: testnet.binance.vision (TESTNET_API_KEY + TESTNET_SECRET gerekir)
+binance_client.py — Binance Demo Futures (demo-fapi.binance.com)
+================================================================
+Kaynak: https://demo.binance.com/en/futures/BTCUSDT
+API:    https://demo-fapi.binance.com  (USDⓈ-M Futures Demo)
+WS:     wss://fstream.binancefuture.com
+
+Klines   → public, key gerektirmez
+Trade    → DEMO_KEY + DEMO_SECRET gerekir
+         (demo.binance.com → API Management'tan alınır)
 
 Ortam değişkenleri:
-  BINANCE_TESTNET_KEY    → Testnet API key
-  BINANCE_TESTNET_SECRET → Testnet secret key
-  USE_TESTNET            → '1' ise testnet, aksi hâlde paper mode
+  BINANCE_DEMO_KEY     → Demo futures API key
+  BINANCE_DEMO_SECRET  → Demo futures secret
+  SYMBOL               → default ETHUSDT
 """
 
-import asyncio
-import hashlib
-import hmac
-import time
-import os
-import logging
+import asyncio, hashlib, hmac, time, os, logging
 from typing import Optional
 import httpx
 
 logger = logging.getLogger("binance")
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
-PUBLIC_BASE   = "https://api.binance.com"
-TESTNET_BASE  = "https://testnet.binance.vision"
+DEMO_REST = "https://demo-fapi.binance.com"   # Demo Futures REST
+LIVE_REST = "https://fapi.binance.com"        # Canlı Futures (klines için)
+DEMO_WS   = "wss://fstream.binancefuture.com" # Demo WS stream
 
-TESTNET_KEY    = os.environ.get("BINANCE_TESTNET_KEY", "")
-TESTNET_SECRET = os.environ.get("BINANCE_TESTNET_SECRET", "")
-USE_TESTNET    = os.environ.get("USE_TESTNET", "0") == "1"
-
+DEMO_KEY    = os.environ.get("BINANCE_DEMO_KEY", "")
+DEMO_SECRET = os.environ.get("BINANCE_DEMO_SECRET", "")
+USE_DEMO    = bool(DEMO_KEY and DEMO_SECRET)
 
 # ─── İmza ─────────────────────────────────────────────────────────────────────
-def _sign(params: dict, secret: str) -> str:
-    query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-    return hmac.new(secret.encode(), query.encode(), hashlib.sha256).hexdigest()
+def _sign(query_string: str, secret: str) -> str:
+    return hmac.new(secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
 
+def _build_query(params: dict) -> str:
+    return "&".join(f"{k}={v}" for k, v in params.items())
 
-# ─── Public: Kline/Candlestick veri çekme ─────────────────────────────────────
+# ─── Public: Klines ───────────────────────────────────────────────────────────
 
 async def fetch_klines(
     symbol: str = "ETHUSDT",
@@ -45,203 +46,260 @@ async def fetch_klines(
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
 ) -> list[dict]:
-    """
-    Binance klines çek — public endpoint, key gerektirmez.
-    Dönüş: [{ts, open, high, low, close, volume, close_ts}, ...]
-    """
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    """Futures klines — public, key gerektirmez. demo-fapi kullan."""
+    params: dict = {"symbol": symbol, "interval": interval, "limit": min(limit, 1500)}
     if start_ms: params["startTime"] = start_ms
     if end_ms:   params["endTime"]   = end_ms
 
-    url = f"{PUBLIC_BASE}/api/v3/klines"
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        raw = resp.json()
-
-    return [
-        {
-            "ts":       int(r[0]),
-            "open":     float(r[1]),
-            "high":     float(r[2]),
-            "low":      float(r[3]),
-            "close":    float(r[4]),
-            "volume":   float(r[5]),
-            "close_ts": int(r[6]),
-            "closed":   True,        # geçmiş mumlar hep kapalı
-        }
-        for r in raw
-    ]
-
-
-async def fetch_history_15m(symbol: str = "ETHUSDT", months: int = 5) -> list[dict]:
-    """
-    Son N aylık 15dk mum geçmişini çek (max 1000 mum/istek → döngüyle).
-    """
-    all_candles: list[dict] = []
-    end_ms = int(time.time() * 1000)
-    # 5 ay ≈ 150 gün × 24 × 4 = 14400 mum → 15 istek (1000 limit)
-    step_ms = 1000 * 15 * 60 * 1000  # 1000 mum × 15dk
-
-    total_needed = months * 30 * 24 * 4  # yaklaşık mum sayısı
-    fetched = 0
-
-    while fetched < total_needed:
-        start_ms = end_ms - step_ms
-        batch = await fetch_klines(symbol, "15m", 1000, start_ms, end_ms)
-        if not batch:
-            break
-        all_candles = batch + all_candles
-        end_ms = batch[0]["ts"] - 1
-        fetched += len(batch)
-        if len(batch) < 1000:
-            break  # başa ulaştık
-        await asyncio.sleep(0.1)  # rate limit
-
-    # Duplicate temizle, sırala
-    seen = set()
-    unique = []
-    for c in sorted(all_candles, key=lambda x: x["ts"]):
-        if c["ts"] not in seen:
-            seen.add(c["ts"])
-            unique.append(c)
-
-    return unique
-
-
-async def fetch_latest_candle(symbol: str = "ETHUSDT") -> dict:
-    """Son mevcut 15dk mumu çek (henüz kapanmamış olabilir)."""
-    candles = await fetch_klines(symbol, "15m", limit=2)
-    if not candles:
-        return {}
-    latest = candles[-1]
-    # Son mum henüz kapanmamışsa closed=False
-    now_ms = int(time.time() * 1000)
-    latest["closed"] = now_ms >= latest["close_ts"]
-    return latest
+    # Klines için önce demo-fapi dene, olmazsa live fapi
+    for base in [DEMO_REST, LIVE_REST]:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                r = await c.get(f"{base}/fapi/v1/klines", params=params)
+                if r.status_code == 200:
+                    raw = r.json()
+                    now_ms = int(time.time() * 1000)
+                    return [{
+                        "ts":       int(x[0]),
+                        "open":     float(x[1]),
+                        "high":     float(x[2]),
+                        "low":      float(x[3]),
+                        "close":    float(x[4]),
+                        "volume":   float(x[5]),
+                        "close_ts": int(x[6]),
+                        "closed":   now_ms >= int(x[6]),
+                    } for x in raw]
+        except Exception as e:
+            logger.warning(f"klines {base} hatası: {e}")
+            continue
+    return []
 
 
 async def fetch_ticker(symbol: str = "ETHUSDT") -> dict:
-    """Anlık fiyat ticker."""
-    url = f"{PUBLIC_BASE}/api/v3/ticker/24hr"
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(url, params={"symbol": symbol})
-        resp.raise_for_status()
-        d = resp.json()
-    return {
-        "price":      float(d["lastPrice"]),
-        "change_pct": float(d["priceChangePercent"]),
-        "high_24h":   float(d["highPrice"]),
-        "low_24h":    float(d["lowPrice"]),
-        "volume_24h": float(d["volume"]),
-        "ts":         int(time.time() * 1000),
-    }
+    """24hr ticker."""
+    for base in [DEMO_REST, LIVE_REST]:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"{base}/fapi/v1/ticker/24hr", params={"symbol": symbol})
+                if r.status_code == 200:
+                    d = r.json()
+                    return {
+                        "price":      float(d["lastPrice"]),
+                        "change_pct": float(d["priceChangePercent"]),
+                        "high_24h":   float(d["highPrice"]),
+                        "low_24h":    float(d["lowPrice"]),
+                        "volume_24h": float(d["volume"]),
+                        "ts":         int(time.time() * 1000),
+                    }
+        except Exception as e:
+            logger.warning(f"ticker {base}: {e}")
+    return {}
 
 
-# ─── Testnet: Demo Trade ───────────────────────────────────────────────────────
+async def fetch_mark_price(symbol: str = "ETHUSDT") -> dict:
+    """Mark price + funding rate."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(f"{DEMO_REST}/fapi/v1/premiumIndex", params={"symbol": symbol})
+            if r.status_code == 200:
+                d = r.json()
+                return {
+                    "mark_price":    float(d.get("markPrice", 0)),
+                    "index_price":   float(d.get("indexPrice", 0)),
+                    "funding_rate":  float(d.get("lastFundingRate", 0)),
+                    "next_funding":  int(d.get("nextFundingTime", 0)),
+                }
+    except Exception as e:
+        logger.warning(f"mark_price: {e}")
+    return {}
 
-class BinanceTestnet:
+
+# ─── Demo Trade Client ─────────────────────────────────────────────────────────
+
+class BinanceDemoFutures:
     """
-    Binance Testnet üzerinde gerçek API çağrıları yapar.
-    Key/Secret olmadığında Paper Mode (local simülasyon) çalışır.
+    demo-fapi.binance.com üzerinden işlem.
+    Key yoksa Paper Mode (local simülasyon).
     """
 
     def __init__(self):
-        self.key    = TESTNET_KEY
-        self.secret = TESTNET_SECRET
-        self.active = bool(self.key and self.secret and USE_TESTNET)
-        self.base   = TESTNET_BASE if self.active else None
-        logger.info(f"Binance mode: {'TESTNET' if self.active else 'PAPER'}")
+        self.key    = DEMO_KEY
+        self.secret = DEMO_SECRET
+        self.active = USE_DEMO
+        self.base   = DEMO_REST
+        mode = "DEMO FUTURES (demo-fapi.binance.com)" if self.active else "PAPER (local)"
+        logger.info(f"Binance mode: {mode}")
 
     def _headers(self) -> dict:
-        return {"X-MBX-APIKEY": self.key}
+        return {"X-MBX-APIKEY": self.key, "Content-Type": "application/x-www-form-urlencoded"}
 
-    def _signed_params(self, params: dict) -> dict:
+    def _signed(self, params: dict) -> tuple[str, str]:
+        """(query_string, signature) döndürür."""
         params["timestamp"] = int(time.time() * 1000)
-        params["signature"] = _sign(params, self.secret)
-        return params
+        params["recvWindow"] = 5000
+        qs = _build_query(params)
+        sig = _sign(qs, self.secret)
+        return qs, sig
+
+    async def _get(self, path: str, params: dict = None) -> dict:
+        params = params or {}
+        qs, sig = self._signed(params)
+        url = f"{self.base}{path}?{qs}&signature={sig}"
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(url, headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def _post(self, path: str, params: dict = None) -> dict:
+        params = params or {}
+        qs, sig = self._signed(params)
+        body = f"{qs}&signature={sig}"
+        url = f"{self.base}{path}"
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(url, content=body, headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    async def _delete(self, path: str, params: dict = None) -> dict:
+        params = params or {}
+        qs, sig = self._signed(params)
+        url = f"{self.base}{path}?{qs}&signature={sig}"
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.delete(url, headers=self._headers())
+            r.raise_for_status()
+            return r.json()
+
+    # ── Hesap ────────────────────────────────────────────────────────────────
 
     async def get_account(self) -> dict:
         if not self.active:
-            return {"balances": [{"asset": "USDT", "free": "10000.0", "locked": "0.0"},
-                                  {"asset": "ETH",  "free": "10.0",    "locked": "0.0"}],
-                    "mode": "paper"}
-        params = self._signed_params({})
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(f"{self.base}/api/v3/account",
-                                  headers=self._headers(), params=params)
-            r.raise_for_status()
-            return r.json()
+            return {
+                "totalWalletBalance": "10000.0",
+                "totalUnrealizedProfit": "0.0",
+                "totalMarginBalance": "10000.0",
+                "availableBalance": "10000.0",
+                "assets": [{"asset": "USDT", "walletBalance": "10000.0", "unrealizedProfit": "0.0"}],
+                "positions": [],
+                "mode": "paper",
+            }
+        return await self._get("/fapi/v2/account")
+
+    async def get_balance(self) -> list:
+        if not self.active:
+            return [{"asset": "USDT", "balance": "10000.0", "availableBalance": "10000.0"}]
+        return await self._get("/fapi/v2/balance")
+
+    async def get_position_risk(self, symbol: str = None) -> list:
+        if not self.active:
+            return []
+        params = {}
+        if symbol: params["symbol"] = symbol
+        return await self._get("/fapi/v2/positionRisk", params)
+
+    # ── Kaldıraç ─────────────────────────────────────────────────────────────
+
+    async def set_leverage(self, symbol: str, leverage: int) -> dict:
+        if not self.active:
+            return {"leverage": leverage, "symbol": symbol, "mode": "paper"}
+        return await self._post("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+
+    async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict:
+        """margin_type: ISOLATED | CROSSED"""
+        if not self.active:
+            return {"mode": "paper"}
+        try:
+            return await self._post("/fapi/v1/marginType", {"symbol": symbol, "marginType": margin_type})
+        except httpx.HTTPStatusError as e:
+            # -4046: zaten bu modda → ignore
+            if b"-4046" in e.response.content:
+                return {"already": margin_type}
+            raise
+
+    # ── Order ─────────────────────────────────────────────────────────────────
 
     async def place_order(
         self,
         symbol: str,
-        side: str,           # BUY | SELL
+        side: str,             # BUY | SELL
         quantity: float,
         order_type: str = "MARKET",
         price: float = None,
         stop_price: float = None,
+        reduce_only: bool = False,
         time_in_force: str = "GTC",
+        position_side: str = "BOTH",   # BOTH | LONG | SHORT
     ) -> dict:
-        """
-        Market veya Limit order aç.
-        Paper modda simüle eder, gerçek API çağrısı yapmaz.
-        """
         if not self.active:
-            # Paper mode simülasyonu
             return {
-                "orderId":       int(time.time() * 1000),
-                "symbol":        symbol,
-                "side":          side,
-                "type":          order_type,
-                "origQty":       str(quantity),
-                "executedQty":   str(quantity),
-                "price":         str(price or 0),
-                "status":        "FILLED",
-                "mode":          "paper",
-                "transactTime":  int(time.time() * 1000),
+                "orderId":      int(time.time() * 1000),
+                "symbol":       symbol,
+                "side":         side,
+                "type":         order_type,
+                "origQty":      str(quantity),
+                "executedQty":  str(quantity),
+                "avgPrice":     str(price or 0),
+                "status":       "FILLED",
+                "positionSide": position_side,
+                "mode":         "paper",
+                "updateTime":   int(time.time() * 1000),
             }
 
         params: dict = {
-            "symbol":   symbol,
-            "side":     side,
-            "type":     order_type,
-            "quantity": f"{quantity:.6f}",
+            "symbol":       symbol,
+            "side":         side,
+            "type":         order_type,
+            "quantity":     f"{quantity:.6f}",
+            "positionSide": position_side,
         }
         if order_type == "LIMIT":
             params["price"]       = f"{price:.2f}"
             params["timeInForce"] = time_in_force
         if stop_price:
             params["stopPrice"] = f"{stop_price:.2f}"
+        if reduce_only:
+            params["reduceOnly"] = "true"
 
-        params = self._signed_params(params)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.post(f"{self.base}/api/v3/order",
-                                   headers=self._headers(), params=params)
-            r.raise_for_status()
-            return r.json()
+        return await self._post("/fapi/v1/order", params)
+
+    async def place_market(self, symbol: str, side: str, quantity: float, reduce_only: bool = False) -> dict:
+        return await self.place_order(symbol, side, quantity, "MARKET", reduce_only=reduce_only)
+
+    async def place_stop_market(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
+        """Stop-market order (SL için)."""
+        return await self.place_order(
+            symbol, side, quantity, "STOP_MARKET",
+            stop_price=stop_price, reduce_only=True
+        )
+
+    async def place_take_profit_market(self, symbol: str, side: str, quantity: float, stop_price: float) -> dict:
+        """Take-profit market order."""
+        return await self.place_order(
+            symbol, side, quantity, "TAKE_PROFIT_MARKET",
+            stop_price=stop_price, reduce_only=True
+        )
 
     async def cancel_order(self, symbol: str, order_id: int) -> dict:
         if not self.active:
             return {"orderId": order_id, "status": "CANCELED", "mode": "paper"}
-        params = self._signed_params({"symbol": symbol, "orderId": order_id})
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.delete(f"{self.base}/api/v3/order",
-                                     headers=self._headers(), params=params)
-            r.raise_for_status()
-            return r.json()
+        return await self._delete("/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
 
-    async def get_open_orders(self, symbol: str = "ETHUSDT") -> list:
+    async def cancel_all_orders(self, symbol: str) -> dict:
+        if not self.active:
+            return {"mode": "paper"}
+        return await self._delete("/fapi/v1/allOpenOrders", {"symbol": symbol})
+
+    async def get_open_orders(self, symbol: str = None) -> list:
         if not self.active:
             return []
-        params = self._signed_params({"symbol": symbol})
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(f"{self.base}/api/v3/openOrders",
-                                  headers=self._headers(), params=params)
-            r.raise_for_status()
-            return r.json()
+        params = {}
+        if symbol: params["symbol"] = symbol
+        return await self._get("/fapi/v1/openOrders", params)
+
+    async def get_order(self, symbol: str, order_id: int) -> dict:
+        if not self.active:
+            return {"orderId": order_id, "status": "FILLED"}
+        return await self._get("/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
 
 
 # Singleton
-testnet = BinanceTestnet()
+demo = BinanceDemoFutures()

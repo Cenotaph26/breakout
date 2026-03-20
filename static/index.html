@@ -281,8 +281,13 @@ canvas.eq { width:100%; height:100%; display:block }
   <div class="sep"></div>
   <div class="regime-badge r-NEUTRAL" id="hdr-regime">NEUTRAL</div>
   <div class="hdr-right">
+    <div class="hdr-stat"><div class="hdr-label">Mark Price</div><div class="hdr-val" id="hdr-mark">—</div></div>
+    <div class="sep"></div>
+    <div class="hdr-stat"><div class="hdr-label">Funding</div><div class="hdr-val" id="hdr-funding" style="font-size:11px">—</div></div>
+    <div class="sep"></div>
     <div class="hdr-stat"><div class="hdr-label">Equity</div><div class="hdr-val" id="hdr-equity">1.0000</div></div>
     <div class="sep"></div>
+    <span class="regime-badge" style="background:#001833;color:#3b8fff;border-color:#1a4080;font-size:9px">DEMO FUTURES</span>
     <div class="ws-dot connecting" id="ws-dot" title="WebSocket"></div>
   </div>
 </header>
@@ -387,8 +392,69 @@ canvas.eq { width:100%; height:100%; display:block }
         </div>
       </div>
 
-      <!-- Config -->
-      <div class="cfg-panel" style="margin:-14px -16px -14px; padding:10px 16px 10px">
+      <!-- Manual Order Panel -->
+      <div class="ctrl-section" style="border-top:1px solid var(--border2);padding-top:10px;margin-top:4px">
+        <div class="ctrl-title">Manuel İşlem (Demo)</div>
+        <div class="cfg-row" style="margin-bottom:6px">
+          <div class="cfg-item">
+            <label>Yön</label>
+            <select id="ord-side">
+              <option value="BUY">▲ LONG / BUY</option>
+              <option value="SELL">▼ SHORT / SELL</option>
+            </select>
+          </div>
+          <div class="cfg-item">
+            <label>Tip</label>
+            <select id="ord-type" onchange="togglePrice()">
+              <option value="MARKET">MARKET</option>
+              <option value="LIMIT">LIMIT</option>
+            </select>
+          </div>
+          <div class="cfg-item">
+            <label>Miktar (ETH)</label>
+            <input type="number" id="ord-qty" value="0.01" step="0.001" min="0.001">
+          </div>
+          <div class="cfg-item" id="price-row" style="display:none">
+            <label>Fiyat</label>
+            <input type="number" id="ord-price" placeholder="0.00" step="0.1">
+          </div>
+          <div class="cfg-item">
+            <label>Kaldıraç</label>
+            <select id="ord-lev">
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="3">3x</option>
+              <option value="5" selected>5x</option>
+              <option value="10">10x</option>
+              <option value="20">20x</option>
+            </select>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn" style="background:#003322;color:var(--green);border:1px solid var(--green2)" onclick="placeOrder('BUY')">▲ BUY/LONG</button>
+          <button class="btn" style="background:#220008;color:var(--red);border:1px solid var(--red2)" onclick="placeOrder('SELL')">▼ SELL/SHORT</button>
+        </div>
+        <div id="order-result" style="margin-top:6px;font-size:10px;color:var(--muted)"></div>
+      </div>
+
+      <!-- Demo Account Info -->
+      <div class="ctrl-section" style="border-top:1px solid var(--border2);padding-top:10px;margin-top:4px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <div class="ctrl-title" style="margin:0">Demo Hesap</div>
+          <button class="ctrl-btn" onclick="loadAccount()" style="font-size:9px;padding:2px 8px">↻</button>
+        </div>
+        <div class="pos-grid" style="gap:4px 12px">
+          <div><div class="pos-label">Bakiye (USDT)</div><div class="pos-val" id="acc-balance">—</div></div>
+          <div><div class="pos-label">Margin</div><div class="pos-val" id="acc-margin">—</div></div>
+          <div><div class="pos-label">Unrealized PnL</div><div class="pos-val" id="acc-upnl">—</div></div>
+          <div><div class="pos-label">Available</div><div class="pos-val" id="acc-avail">—</div></div>
+        </div>
+        <div style="margin-top:6px">
+          <div class="pos-label" style="margin-bottom:3px">Açık Pozisyonlar</div>
+          <div id="open-positions" style="font-size:10px;color:var(--muted)">—</div>
+        </div>
+        <button class="btn-close" onclick="cancelAllOrders()" style="margin-top:6px">✕ Tüm Emirleri İptal</button>
+      </div>
         <div class="ctrl-title">Hızlı Config</div>
         <div class="cfg-row">
           <div class="cfg-item">
@@ -606,7 +672,7 @@ function handleMessage(d) {
     return;
   }
 
-  if (ev === 'ticker') {
+  if (ev === 'mark') { handleMark(d); return; }
     S.ticker = d;
     updateTicker();
     return;
@@ -1201,6 +1267,72 @@ function closePosition() {
   sendCmd('close_position');
 }
 
+function togglePrice() {
+  document.getElementById('price-row').style.display =
+    document.getElementById('ord-type').value === 'LIMIT' ? '' : 'none';
+}
+
+async function placeOrder(forceSide) {
+  const side  = forceSide || document.getElementById('ord-side').value;
+  const type  = document.getElementById('ord-type').value;
+  const qty   = parseFloat(document.getElementById('ord-qty').value);
+  const lev   = parseInt(document.getElementById('ord-lev').value);
+  const price = type === 'LIMIT' ? parseFloat(document.getElementById('ord-price').value) : null;
+  const res   = document.getElementById('order-result');
+
+  // Önce WS üzerinden gönder
+  sendCmd('manual_order', { side, type, qty, leverage: lev, price });
+  res.textContent = `Gönderildi: ${side} ${qty} ETH ${type}${price?' @'+price:''}  (${lev}x)`;
+  res.style.color = side === 'BUY' ? 'var(--green)' : 'var(--red)';
+  setTimeout(() => loadAccount(), 1500);
+}
+
+async function loadAccount() {
+  try {
+    const d = await fetch('/api/account').then(r=>r.json());
+    if (d.error) return;
+    el('acc-balance').textContent = parseFloat(d.totalWalletBalance||d.walletBalance||0).toFixed(2) + ' USDT';
+    el('acc-margin').textContent  = parseFloat(d.totalMarginBalance||0).toFixed(2) + ' USDT';
+    const upnl = parseFloat(d.totalUnrealizedProfit||0);
+    el('acc-upnl').textContent    = (upnl>=0?'+':'')+upnl.toFixed(4) + ' USDT';
+    el('acc-upnl').style.color    = upnl>=0 ? 'var(--green)' : 'var(--red)';
+    el('acc-avail').textContent   = parseFloat(d.availableBalance||0).toFixed(2) + ' USDT';
+
+    // Pozisyonlar
+    const pos = await fetch('/api/positions').then(r=>r.json());
+    const active = Array.isArray(pos) ? pos.filter(p=>parseFloat(p.positionAmt||0)!==0) : [];
+    el('open-positions').innerHTML = active.length === 0
+      ? '<span style="color:var(--muted2)">Açık pozisyon yok</span>'
+      : active.map(p=>{
+          const amt = parseFloat(p.positionAmt);
+          const pnl = parseFloat(p.unRealizedProfit||0);
+          const col = pnl>=0?'var(--green)':'var(--red)';
+          return `<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border)">
+            <span style="color:${amt>0?'var(--green)':'var(--red)'}">${amt>0?'▲ LONG':'▼ SHORT'} ${Math.abs(amt)}</span>
+            <span>@${parseFloat(p.entryPrice||0).toFixed(2)}</span>
+            <span style="color:${col}">${pnl>=0?'+':''}${pnl.toFixed(4)}</span>
+          </div>`;
+        }).join('');
+  } catch(e) { console.error('Account load:', e); }
+}
+
+async function cancelAllOrders() {
+  if (!confirm('Tüm açık emirler iptal edilsin mi?')) return;
+  const r = await fetch('/api/cancel_all', {method:'POST'}).then(r=>r.json());
+  document.getElementById('order-result').textContent = r.ok ? 'Emirler iptal edildi' : 'Hata: '+r.error;
+  setTimeout(() => loadAccount(), 1000);
+}
+
+// Mark price + funding handler
+function handleMark(d) {
+  if (d.mark_price) el('hdr-mark').textContent = parseFloat(d.mark_price).toFixed(2);
+  if (d.funding_rate !== undefined) {
+    const fr = parseFloat(d.funding_rate) * 100;
+    el('hdr-funding').textContent = (fr>=0?'+':'')+fr.toFixed(4)+'%';
+    el('hdr-funding').style.color = fr>=0 ? 'var(--green)' : 'var(--red)';
+  }
+}
+
 // ═══════════════════════════════════════════════════════════
 //  UTILS
 // ═══════════════════════════════════════════════════════════
@@ -1210,10 +1342,9 @@ const el = id => document.getElementById(id);
 //  INIT
 // ═══════════════════════════════════════════════════════════
 connectWS();
-
-// Sayfa yenilenmesinde WS full_state alacak → mumlar temiz yüklenir
-// resize çağrısı layout tamamen hazır olduğunda
 setTimeout(() => { resize(); renderChart(); }, 100);
+setTimeout(() => loadAccount(), 2000);
+setInterval(() => loadAccount(), 30000);
 </script>
 </body>
 </html>
