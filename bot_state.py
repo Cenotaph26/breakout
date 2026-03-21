@@ -101,7 +101,10 @@ _last_line_update: int = 0
 _regime:       str  = "NEUTRAL"
 _regime_score: float = 0.0
 _regime_counter: int = 0
-_cfg:          RegimeConfig = RegimeConfig()
+_cfg:          RegimeConfig = RegimeConfig(
+    trend_filter_window=15, trailing_step=0.003, tp1_min_rr=1.5,
+    long_trend_req='any', short_trend_req='down', long_only=False, vol_filter_min=0.0
+)  # 15dk backtest en iyisi
 
 _position:     Optional[LivePosition] = None
 _closed_trades: list[ClosedTrade]     = []

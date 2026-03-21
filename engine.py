@@ -66,25 +66,26 @@ class RegimeConfig:
 
     @classmethod
     def for_regime(cls, regime: str) -> 'RegimeConfig':
-        """Backtest bulgularıyla eşleşen rejim→parametre haritası"""
-        maps = {
-            'BEAR_STRONG': cls(trend_filter_window=80,  trailing_step=0.003, tp1_min_rr=1.5,
-                               long_trend_req='any', short_trend_req='down', long_only=False,
-                               vol_filter_min=0.003, position_size=0.8),
-            'BEAR':        cls(trend_filter_window=100, trailing_step=0.003, tp1_min_rr=1.5,
-                               long_trend_req='up',  short_trend_req='down', long_only=False,
-                               vol_filter_min=0.002, position_size=0.9),
-            'NEUTRAL':     cls(trend_filter_window=150, trailing_step=0.005, tp1_min_rr=1.5,
-                               long_trend_req='up',  short_trend_req='down', long_only=False,
-                               vol_filter_min=0.003, position_size=1.0),
-            'BULL':        cls(trend_filter_window=100, trailing_step=0.005, tp1_min_rr=1.5,
-                               long_trend_req='any', short_trend_req='any',  long_only=False,
-                               vol_filter_min=0.002, position_size=1.0),
-            'BULL_STRONG': cls(trend_filter_window=80,  trailing_step=0.005, tp1_min_rr=1.5,
-                               long_trend_req='any', short_trend_req='any',  long_only=False,
-                               vol_filter_min=0.0015, position_size=1.0),
-        }
-        return maps.get(regime, maps['NEUTRAL'])
+        """
+        15dk backtest kanıtlı sabit config — rejimden bağımsız.
+        TFW=15 (225dk), lreq=any, sreq=down, trail=0.003 → +4.84% / 5 ay.
+
+        Rejim bilgisi dashboard'da görüntülenir ve loglanır,
+        ama parametre DEĞİŞMEZ — adaptasyon burada kayıp yaratıyor.
+        Kullanıcı dashboard'dan manuel override yapabilir.
+        """
+        # Tüm rejimler için kanıtlanmış en iyi 15dk config
+        best = cls(
+            trend_filter_window=15,    # 15 × 15dk = 225dk = 3.75 saat trend penceresi
+            trailing_step=0.003,       # %0.3 trailing
+            tp1_min_rr=1.5,           # min 1.5 R/R
+            long_trend_req='any',      # her trendte long al
+            short_trend_req='down',    # sadece düşen trendde short
+            long_only=False,
+            vol_filter_min=0.0,        # volatilite filtresi kapalı
+            position_size=1.0,
+        )
+        return best
 
 
 # ─────────────────────────────────────────────────────────────────────────────
