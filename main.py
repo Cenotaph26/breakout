@@ -85,109 +85,122 @@ async def _init_history():
         logger.error(f"Init hatası: {e}")
 
 
-async def _binance_stream():
-    """
-    Binance Futures WS combined stream.
-    - kline_15m  → saniyede bir canlı mum, kapanınca x=true
-    - ticker     → fiyat/hacim
-    - markPrice  → mark price + funding
-    Bağlantı koparsa exponential backoff ile yeniden bağlanır.
-    """
+async def _binance_stream_ws():
+    """Binance WS stream — bağlanırsa saniyede 1 güncelleme gelir."""
     global _last_closed_ts
     sym = SYMBOL.lower()
-    url = BNWS.format(s=sym, iv=INTERVAL)
-    retry = 0
+    url = f"wss://fstream.binancefuture.com/stream?streams={sym}@kline_{INTERVAL}/{sym}@ticker/{sym}@markPrice@1s"
 
-    while True:
-        try:
-            logger.info(f"Binance WS bağlanıyor...")
-            async with websockets.connect(url, ping_interval=20, ping_timeout=15,
-                                          max_size=2**20) as ws:
-                retry = 0
-                logger.info("Binance WS bağlandı ✓")
-                async for raw in ws:
-                    try:
-                        msg    = json.loads(raw)
-                        stream = msg.get("stream", "")
-                        data   = msg.get("data", {})
+    async with websockets.connect(url, ping_interval=20, ping_timeout=15, max_size=2**20) as ws:
+        logger.info("Binance WS stream bağlandı ✓")
+        async for raw in ws:
+            msg    = json.loads(raw)
+            stream = msg.get("stream", "")
+            data   = msg.get("data", {})
 
-                        if "kline" in stream:
-                            k = data.get("k", {})
-                            if not k:
-                                continue
-                            c = {
-                                "ts":       int(k["t"]),
-                                "open":     float(k["o"]),
-                                "high":     float(k["h"]),
-                                "low":      float(k["l"]),
-                                "close":    float(k["c"]),
-                                "volume":   float(k["v"]),
-                                "close_ts": int(k["T"]),
-                                "closed":   bool(k["x"]),
-                            }
-                            if c["closed"] and c["ts"] > _last_closed_ts:
-                                _last_closed_ts = c["ts"]
-                                state.push_candle(c, is_closed=True)
-                                logger.info(f"KLINE CLOSED C={c['close']:.2f}")
-                            else:
-                                state.push_candle(c, is_closed=False)
+            if "kline" in stream:
+                k = data.get("k", {})
+                if not k:
+                    continue
+                c = {
+                    "ts": int(k["t"]), "open": float(k["o"]), "high": float(k["h"]),
+                    "low": float(k["l"]), "close": float(k["c"]), "volume": float(k["v"]),
+                    "close_ts": int(k["T"]), "closed": bool(k["x"]),
+                }
+                if c["closed"] and c["ts"] > _last_closed_ts:
+                    _last_closed_ts = c["ts"]
+                    state.push_candle(c, is_closed=True)
+                    logger.info(f"[WS] KLINE CLOSED C={c['close']:.2f}")
+                else:
+                    state.push_candle(c, is_closed=False)
 
-                        elif "ticker" in stream:
-                            await ws_manager.broadcast({"event": "ticker",
-                                "price":      float(data.get("c", 0)),
-                                "change_pct": float(data.get("P", 0)),
-                                "high_24h":   float(data.get("h", 0)),
-                                "low_24h":    float(data.get("l", 0)),
-                                "volume_24h": float(data.get("v", 0)),
-                                "ts":         int(time.time() * 1000),
-                            })
-
-                        elif "markPrice" in stream:
-                            await ws_manager.broadcast({"event": "mark",
-                                "mark_price":   float(data.get("p", 0)),
-                                "index_price":  float(data.get("i", 0)),
-                                "funding_rate": float(data.get("r", 0)),
-                                "next_funding": int(data.get("T", 0)),
-                            })
-
-                    except Exception as e:
-                        logger.warning(f"Stream msg hatası: {e}")
-
-        except Exception as e:
-            retry = min(retry + 1, 8)
-            delay = min(2 ** retry, 60)
-            logger.error(f"Binance WS koptu ({e}), {delay}s sonra yeniden bağlanıyor")
-            await asyncio.sleep(delay)
+            elif "ticker" in stream:
+                await ws_manager.broadcast({"event": "ticker",
+                    "price": float(data.get("c", 0)), "change_pct": float(data.get("P", 0)),
+                    "high_24h": float(data.get("h", 0)), "low_24h": float(data.get("l", 0)),
+                    "volume_24h": float(data.get("v", 0)), "ts": int(time.time() * 1000),
+                })
+            elif "markPrice" in stream:
+                await ws_manager.broadcast({"event": "mark",
+                    "mark_price": float(data.get("p", 0)), "index_price": float(data.get("i", 0)),
+                    "funding_rate": float(data.get("r", 0)), "next_funding": int(data.get("T", 0)),
+                })
 
 
-async def _rest_fallback():
+async def _rest_fast_loop():
     """
-    WS stream erişilemezse REST backup: 30sn'de bir kline çeker.
-    Aynı zamanda 30sn'de bir ticker günceller (stream zaten anlık yapar).
+    REST hızlı poll — WS erişilemediğinde devreye girer.
+    3 saniyede bir klines?limit=2 çeker → canlıya yakın güncelleme.
+    Ticker + mark price ayrı periyotta güncellenir.
     """
     global _last_closed_ts
+    tick_counter = 0
+
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(3)
         try:
-            candles = await fetch_klines(SYMBOL, INTERVAL, limit=3)
-            now_ms = int(time.time() * 1000)
+            # ── Kline ──────────────────────────────────────────────
+            candles = await fetch_klines(SYMBOL, INTERVAL, limit=2)
+            now_ms  = int(time.time() * 1000)
             for c in candles:
                 c["closed"] = now_ms >= c["close_ts"]
                 if c["closed"] and c["ts"] > _last_closed_ts:
                     _last_closed_ts = c["ts"]
                     state.push_candle(c, is_closed=True)
-                    logger.info(f"[FALLBACK] KLINE CLOSED {c['ts']}")
+                    logger.info(f"[REST] KLINE CLOSED {c['ts']}")
                 elif not c["closed"] and c["ts"] == candles[-1]["ts"]:
                     state.push_candle(c, is_closed=False)
         except Exception as e:
-            logger.debug(f"REST fallback: {e}")
+            logger.debug(f"REST kline: {e}")
+
+        tick_counter += 1
+        if tick_counter % 5 == 0:  # her 15sn'de ticker + mark
+            try:
+                t = await fetch_ticker(SYMBOL)
+                if t:
+                    await ws_manager.broadcast({"event": "ticker", **t})
+            except Exception:
+                pass
+            try:
+                m = await fetch_mark_price(SYMBOL)
+                if m:
+                    await ws_manager.broadcast({"event": "mark", **m})
+            except Exception:
+                pass
+
+
+async def _smart_stream():
+    """
+    Akıllı hibrit: önce Binance WS dene, başarısız olursa hızlı REST poll'a geç.
+    WS kopunca tekrar dener, başarılı olursa REST döngüsünü durdurur.
+    """
+    rest_task = None
+
+    while True:
+        try:
+            # WS başarılı olursa REST'i durdur
+            if rest_task and not rest_task.done():
+                rest_task.cancel()
+                rest_task = None
+                logger.info("[STREAM] REST poll durduruldu, WS aktif")
+
+            await _binance_stream_ws()   # Bağlı kaldığı sürece burada döner
+
+        except Exception as e:
+            logger.warning(f"[STREAM] WS erişilemedi: {type(e).__name__} — REST poll'a geçiliyor")
+
+            # REST fallback'i başlat (henüz çalışmıyorsa)
+            if rest_task is None or rest_task.done():
+                rest_task = asyncio.create_task(_rest_fast_loop())
+                logger.info("[STREAM] REST hızlı poll başlatıldı (3sn)")
+
+            await asyncio.sleep(30)  # 30sn sonra WS'yi tekrar dene
 
 
 @app.on_event("startup")
 async def startup():
     await _init_history()
-    asyncio.create_task(_binance_stream())  # ← canlı WS stream
-    asyncio.create_task(_rest_fallback())   # ← REST yedek (30sn)
+    asyncio.create_task(_smart_stream())    # ← WS önce, başarısız → hızlı REST
 
 # ─── WebSocket ─────────────────────────────────────────────────────────────────
 @app.websocket("/ws")
