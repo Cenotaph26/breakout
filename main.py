@@ -163,12 +163,9 @@ async def _rest_loop():
     tick_n = 0
 
     while True:
-        # WS bağlıysa yavaş çalış (sadece kontrol)
-        interval = 3 if not _ws_connected else 60
-        await asyncio.sleep(interval)
-
-        if _ws_connected:
-            continue   # WS zaten canlı, REST gerekmez
+        # Her zaman 3sn'de bir çalış — browser WS mum kapanışını zaten gönderir
+        # REST loop: kapanmamış son mumu sürekli günceller + sinyal motorunu besler
+        await asyncio.sleep(3)
 
         # WS bağlı değil → REST ile canlı güncelleme
         try:
@@ -185,7 +182,7 @@ async def _rest_loop():
                     logger.info(f"[REST] KLINE CLOSED C={c['close']:.2f}")
                 elif not c["closed"] and c["ts"] == candles[-1]["ts"]:
                     state.push_candle(c, is_closed=False)
-                    logger.debug(f"[REST] tick C={c['close']:.2f}")
+                    logger.info(f"[REST] tick C={c['close']:.2f} bot={state._bot_running}")
         except Exception as e:
             logger.warning(f"[REST] klines hatası: {e}")
 
