@@ -67,7 +67,7 @@ BNWS = "wss://fstream.binancefuture.com/stream?streams={s}@kline_{iv}/{s}@ticker
 
 
 async def _init_history():
-    """Başlangıçta REST'ten 500 mum çek."""
+    """Başlangıçta REST'ten 500 mum çek, son kapanan mumu sinyal motoruna gönder."""
     global _last_closed_ts
     try:
         logger.info("Geçmiş yükleniyor...")
@@ -78,6 +78,9 @@ async def _init_history():
                 state.load_history(closed)
                 _last_closed_ts = closed[-1]["ts"]
                 logger.info(f"{len(closed)} mum yüklendi, son={closed[-1]['close']:.2f}")
+                # Son kapanan mumu tekrar push et → sinyal motoru başlangıçta çalışsın
+                state.push_candle(closed[-1], is_closed=True)
+                logger.info(f"[INIT] Sinyal motoru başlangıç push: C={closed[-1]['close']:.2f}")
     except Exception as e:
         logger.error(f"Init hatası: {e}")
 
@@ -167,22 +170,30 @@ async def _rest_loop():
         # REST loop: kapanmamış son mumu sürekli günceller + sinyal motorunu besler
         await asyncio.sleep(3)
 
-        # WS bağlı değil → REST ile canlı güncelleme
         try:
             candles = await fetch_klines(SYMBOL, INTERVAL, limit=2)
             if not candles:
                 logger.warning("[REST] Boş klines yanıtı")
                 continue
+
             now_ms = int(time.time() * 1000)
             for c in candles:
                 c["closed"] = now_ms >= c["close_ts"]
-                if c["closed"] and c["ts"] > _last_closed_ts:
-                    _last_closed_ts = c["ts"]
-                    state.push_candle(c, is_closed=True)
-                    logger.info(f"[REST] KLINE CLOSED C={c['close']:.2f}")
-                elif not c["closed"] and c["ts"] == candles[-1]["ts"]:
-                    state.push_candle(c, is_closed=False)
-                    logger.info(f"[REST] tick C={c['close']:.2f} bot={state._bot_running}")
+
+            # Kapalı mumları işle (sinyal motoru tetiklenir)
+            for c in candles:
+                if c["closed"]:
+                    if c["ts"] > _last_closed_ts:
+                        _last_closed_ts = c["ts"]
+                        state.push_candle(c, is_closed=True)
+                        logger.info(f"[REST] CLOSED C={c['close']:.2f}")
+
+            # Son açık mumu güncelle (grafik canlı kalır)
+            last = candles[-1]
+            if not last["closed"]:
+                state.push_candle(last, is_closed=False)
+                logger.info(f"[REST] tick C={last['close']:.2f} bot={state._bot_running}")
+
         except Exception as e:
             logger.warning(f"[REST] klines hatası: {e}")
 
