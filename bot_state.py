@@ -537,6 +537,12 @@ def get_trades_csv() -> str:
 def start_bot():
     global _bot_running, _bot_paused
     _bot_running = True; _bot_paused = False
+    # Son kapanan mumu hemen tara — bot başlar başlamaz sinyal motoru aktif olsun
+    if _candles:
+        last_closed = next((c for c in reversed(_candles) if c.get('closed', True)), None)
+        if last_closed:
+            _log(f"[BOT] Başlatıldı, anlık tarama: C={last_closed['close']:.2f}", "INFO")
+            _check_entry_signal(len(_candle_objs) - 1)
     _log("Bot BAŞLATILDI", "INFO")
     _broadcast("bot_status", {"running": True, "paused": False})
 
