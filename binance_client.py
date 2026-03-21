@@ -51,8 +51,8 @@ async def fetch_klines(
     if start_ms: params["startTime"] = start_ms
     if end_ms:   params["endTime"]   = end_ms
 
-    # Klines için önce demo-fapi dene, olmazsa live fapi
-    for base in [DEMO_REST, LIVE_REST]:
+    # Klines: ÖNCE canlı fapi (gerçek zamanlı), demo-fapi fallback (1dk gecikmeli)
+    for base in [LIVE_REST, DEMO_REST]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
                 r = await c.get(f"{base}/fapi/v1/klines", params=params)
@@ -77,7 +77,7 @@ async def fetch_klines(
 
 async def fetch_ticker(symbol: str = "ETHUSDT") -> dict:
     """24hr ticker."""
-    for base in [DEMO_REST, LIVE_REST]:
+    for base in [LIVE_REST, DEMO_REST]:
         try:
             async with httpx.AsyncClient(timeout=5.0) as c:
                 r = await c.get(f"{base}/fapi/v1/ticker/24hr", params={"symbol": symbol})
@@ -100,7 +100,7 @@ async def fetch_mark_price(symbol: str = "ETHUSDT") -> dict:
     """Mark price + funding rate."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(f"{DEMO_REST}/fapi/v1/premiumIndex", params={"symbol": symbol})
+            r = await c.get(f"{LIVE_REST}/fapi/v1/premiumIndex", params={"symbol": symbol})
             if r.status_code == 200:
                 d = r.json()
                 return {

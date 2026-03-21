@@ -348,8 +348,8 @@ function connectWS(){
   ws.onmessage=e=>{ try{ onMsg(JSON.parse(e.data)); }catch(err){ console.error('[WS]',err); } };
   ws.onclose=()=>{
     setDot('');
-    _retry=Math.min(_retry+1,8);
-    const d=Math.min(1000*Math.pow(1.5,_retry),30000);
+    _retry=Math.min(_retry+1,5);
+    const d=Math.min(500*Math.pow(1.5,_retry),8000);
     console.log('[WS] closed, retry in',d+'ms');
     setTimeout(connectWS,d);
   };
