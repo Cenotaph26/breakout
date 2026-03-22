@@ -314,7 +314,10 @@ def _check_entry_signal(i: int):
         if la:
             all_above = all(_candle_objs[j].c > _res.price_at(j) * (1 + BREAK_MARGIN)
                             for j in range(i - CONFIRM + 1, i + 1))
-            fb = _candle_objs[i - CONFIRM].c <= _res.price_at(i - CONFIRM)
+            # fb: son 8 mum içinde en az bir kez res altında kapanmışsa
+            fb_window = 8
+            fb = any(_candle_objs[j].c <= _res.price_at(j) * (1 + BREAK_MARGIN * 2)
+                     for j in range(max(0, i - fb_window), i - CONFIRM + 1))
             def mom_ok(d):
                 w = _candle_objs[max(0, i - MOM_K):i + 1]
                 if d == "long": return sum(1 for c in w if c.c >= c.o) / len(w) >= MOM_MIN
@@ -336,7 +339,10 @@ def _check_entry_signal(i: int):
                 return sum(1 for c in w if c.c < c.o) / len(w) >= MOM_MIN
             all_below = all(_candle_objs[j].c < _sup.price_at(j) * (1 - BREAK_MARGIN)
                             for j in range(i - CONFIRM + 1, i + 1))
-            fb = _candle_objs[i - CONFIRM].c >= _sup.price_at(i - CONFIRM)
+            # fb: son 8 mum içinde en az bir kez sup üzerinde kapanmışsa (daha geniş pencere)
+            fb_window = 8
+            fb = any(_candle_objs[j].c >= _sup.price_at(j) * (1 - BREAK_MARGIN * 2)
+                     for j in range(max(0, i - fb_window), i - CONFIRM + 1))
             if all_below and fb and vol_ok and mom_ok("short"):
                 direction = "short"
 

@@ -371,16 +371,24 @@ async def ws_endpoint(ws: WebSocket):
                     await ws.send_text(json.dumps({"event":"position_closed",**res}))
                 elif cmd == "candle_from_browser":
                     c = data.get("candle")
-                    if c:
-                        state.push_candle(c, is_closed=bool(c.get("closed", False)))
+                    if c and bool(c.get("closed", False)):
+                        import sys as _sys
+                        _m = _sys.modules[__name__]
+                        ts = c.get("ts", 0)
+                        if ts > _m._last_closed_ts:
+                            _m._last_closed_ts = ts
+                            state.push_candle(c, is_closed=True)
+                            logger.info(f"[BROWSER] KLINE CLOSED C={c.get('close',0):.2f}")
+                    elif c and not c.get("closed", False):
+                        state.push_candle(c, is_closed=False)
                 elif cmd == "set_interval":
                     # Kullanıcı TF değiştirdi → yeni interval ile geçmişi yükle
                     new_iv = data.get("interval", "15m")
                     valid = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","1d"]
                     if new_iv in valid:
-                        global INTERVAL, _last_closed_ts
+                        global INTERVAL
                         INTERVAL = new_iv
-                        _last_closed_ts = 0
+                        import sys as _sys2; _sys2.modules[__name__]._last_closed_ts = 0
                         state.reset_history()
                         logger.info(f"[TF] Interval değişti: {new_iv}")
                         asyncio.create_task(_init_history())
