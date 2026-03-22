@@ -491,6 +491,19 @@ def export_trades():
     return StreamingResponse(iter([csv_data]), media_type="text/csv",
         headers={"Content-Disposition":"attachment; filename=trades.csv"})
 
+@app.get("/api/klines")
+async def api_klines(interval: str = "15m", limit: int = 200):
+    """Görsel grafik için klines döndür (farklı TF'ler için)."""
+    valid = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","1d"]
+    if interval not in valid:
+        return {"error": "Geçersiz interval"}
+    try:
+        candles = await fetch_klines(SYMBOL, interval, limit=min(limit, 500))
+        return {"candles": candles, "interval": interval}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/api/backtest")
 async def api_backtest():
     """5 aylık backtest sonuçlarını döndür."""

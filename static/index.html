@@ -351,7 +351,7 @@ header{background:var(--bg1);border-bottom:1px solid var(--border);display:flex;
 
 // ─── State ────────────────────────────────────────────────
 const S={
-  candles:[], lines:{res:null,sup:null}, position:null,
+  candles:[], chartCandles:[], lines:{res:null,sup:null}, position:null,
   stats:{}, equity_curve:[], trades:[], running:false, paused:false,
   regime:'NEUTRAL', ticker:{}, mark:{}, logLines:[],
   zoom:100, showLines:true, offset:0, crosshair:null, ws:null,
@@ -421,6 +421,15 @@ function onMsg(d){
 }
 
 // ─── Candle merge ─────────────────────────────────────────
+function mergeChartC(c, closed){
+  // chartCandles için merge (görsel TF)
+  if(!S.chartCandles) S.chartCandles=[];
+  const last=S.chartCandles[S.chartCandles.length-1];
+  if(last&&last.ts===c.ts){ S.chartCandles[S.chartCandles.length-1]=c; }
+  else if(!last||c.ts>last.ts){ S.chartCandles.push(c); if(S.chartCandles.length>600)S.chartCandles.shift(); }
+  draw();
+}
+
 function mergeC(c,closed){
   if(!c) return;
   const last=S.candles[S.candles.length-1];
@@ -451,7 +460,9 @@ function draw(){ if(_raf)cancelAnimationFrame(_raf); _raf=requestAnimationFrame(
 function _draw(){
   const W=cvs.width,H=cvs.height;
   if(!W||!H) return;
-  const cs=S.candles;
+  // TF != 15m ise chartCandles (görsel), yoksa bot candles
+  const cs = (S.tf && S.tf !== '15m' && S.chartCandles && S.chartCandles.length)
+              ? S.chartCandles : S.candles;
   if(!cs.length){
     ctx.clearRect(0,0,W,H);
     ctx.fillStyle='#1a2333'; ctx.font='11px JetBrains Mono'; ctx.textAlign='center';
@@ -539,50 +550,54 @@ function _draw(){
 
 function drawTL(tl,color,si,ei,tX,tY,maxX){
   if(!tl||!tl.points||tl.points.length<2) return;
-  // Tüm noktalar 0-based (S.candles indeksi), si..ei aralığına filtrele
   const all=tl.points;
   if(!all.length) return;
 
-  // Slope hesapla (tüm noktalardan)
-  const f=all[0], l=all[all.length-1];
-  const dx=(l.i-f.i)||1, dy=tY(l.price)-tY(f.price);
-  const sl=dy/dx; // piksel/indeks
-
-  // Görünür aralıktaki noktalar
+  // Görünür penceredeki (si..ei) noktalar
   const vis=all.filter(p=>p.i>=si&&p.i<=ei);
+  if(vis.length<1) return; // hiç nokta yok
 
-  // Eğer görünür alanda hiç nokta yoksa bile uzatma çiz
-  const lineAlpha=Math.min(0.9,0.4+tl.touch_count*0.1);
+  const lineAlpha=Math.min(0.85,0.4+tl.touch_count*0.1);
   const hex=Math.round(lineAlpha*255).toString(16).padStart(2,'0');
   ctx.strokeStyle=color+hex;
-  ctx.lineWidth=Math.min(2.5,0.8+tl.touch_count*0.25);
+  ctx.lineWidth=Math.min(2,0.8+tl.touch_count*0.2);
   ctx.setLineDash([]);
 
-  // f noktasından ekranın soluna uzat
-  const x0=tX(f.i-si), y0=tY(f.price);
-  const xL=tX(l.i-si), yL=tY(l.price);
-  // Ekran solunda (x=0) ve sağında (x=maxX) y değerleri
-  const yAtLeft  = y0 + sl*(0-x0);
-  const yAtRight = yL + sl*(maxX-xL);
-
+  // Görünür noktaları çiz
   ctx.beginPath();
-  ctx.moveTo(0, yAtLeft);
-  if(vis.length>=2){
-    for(const p of vis) ctx.lineTo(tX(p.i-si), tY(p.price));
+  ctx.moveTo(tX(vis[0].i-si), tY(vis[0].price));
+  for(let k=1;k<vis.length;k++){
+    ctx.lineTo(tX(vis[k].i-si), tY(vis[k].price));
   }
-  ctx.lineTo(maxX, yAtRight);
+
+  // İki nokta varsa sola/sağa uzat
+  if(vis.length>=2){
+    const vf=vis[0], vl=vis[vis.length-1];
+    const px1=tX(vf.i-si), py1=tY(vf.price);
+    const px2=tX(vl.i-si), py2=tY(vl.price);
+    const dxPx=(px2-px1)||1;
+    const slope=(py2-py1)/dxPx;
+    // Sol uzantı (x=0)
+    const yLeft=py1+slope*(0-px1);
+    // Sağ uzantı (x=maxX)
+    const yRight=py2+slope*(maxX-px2);
+    ctx.moveTo(0,yLeft);
+    ctx.lineTo(px1,py1);
+    ctx.moveTo(px2,py2);
+    ctx.lineTo(maxX,yRight);
+  }
   ctx.stroke();
 
-  // Badge — ortada
-  const midI=Math.floor((si+ei)/2);
-  const midP=all.find(p=>p.i>=midI)||l;
-  const mx=tX(midP.i-si), my=tY(midP.price);
+  // Touch count badge — ortada
+  const mid=vis[Math.floor(vis.length/2)];
+  const mx=tX(mid.i-si), my=tY(mid.price);
   const label='T'+tl.touch_count;
   const lw=ctx.measureText(label).width+8;
   ctx.fillStyle=color+'33'; ctx.fillRect(mx-lw/2,my-8,lw,16);
   ctx.fillStyle=color; ctx.font='bold 9px JetBrains Mono'; ctx.textAlign='center';
   ctx.fillText(label,mx,my+4); ctx.textAlign='left';
 }
+
 function hLine(price,color,label,tY,maxX){
   const y=Math.round(tY(price))+.5;
   ctx.strokeStyle=color+'77'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
@@ -857,9 +872,16 @@ function connectBinanceWS(){
         mergeC(c, k.x);
         draw();
         // Kapanan mum → backend sinyal motorunu tetikle
-        if(k.x){
-          send('candle_from_browser',{candle:c});
-          console.log(`[BN-WS] CLOSED C=${c.close.toFixed(2)}`);
+        // TF != 15m → chartCandles güncelle (görsel)
+        if(S.tf && S.tf !== '15m'){
+          mergeChartC(c, k.x);
+        } else {
+          // 15m → bot candles güncelle (sinyal motoru)
+          mergeC(c, k.x);
+          if(k.x){
+            send('candle_from_browser',{candle:c});
+            console.log(`[BN-WS] CLOSED C=${c.close.toFixed(2)}`);
+          }
         }
       }
 
@@ -897,6 +919,7 @@ S.tf = '15m'; // aktif timeframe
 function setTF(tf) {
   if (S.tf === tf) return;
   S.tf = tf;
+
   // Header badge güncelle
   const hdrTf = document.getElementById('hdr-tf'); if(hdrTf) hdrTf.textContent=tf;
   // Buton stillerini güncelle
@@ -904,15 +927,29 @@ function setTF(tf) {
     const btn = document.getElementById('tf'+t);
     if(btn) btn.classList.toggle('act', t === tf);
   });
-  // Candles'ı temizle — yeni TF verisi gelene kadar boş
-  S.candles = []; S.lines = {res:null,sup:null}; S.position=null;
+
+  // Grafik mumlarını temizle — yeni TF verisi gelene kadar boş
+  S.chartCandles = [];  // TF-spesifik grafik mumu (bot candles'dan ayrı)
   draw();
-  // Backend'e TF değişikliğini bildir
-  send('set_interval', {interval: TF_INTERVALS[tf]});
-  // Aynı zamanda Binance WS'i yeniden bağla (yeni stream)
-  if(_bnWs) { _bnWs.close(); }
-  // connectBinanceWS içindeki stream URL TF'e göre dinamik olacak
-  setTimeout(connectBinanceWS, 300);
+
+  // Binance WS yeniden bağlan (yeni interval ile kline stream)
+  if(_bnWs){ _bnWs.close(); }
+  setTimeout(connectBinanceWS, 200);
+
+  // REST'ten geçmiş mumları çek (görsel grafik için)
+  fetchChartHistory(tf);
+}
+
+// Grafik geçmişini REST'ten çek (sadece görsel, bot için değil)
+async function fetchChartHistory(tf){
+  try{
+    const iv = TF_INTERVALS[tf]||'15m';
+    const r = await fetch(`/api/klines?interval=${iv}&limit=200`).then(r=>r.json());
+    if(r && r.candles){
+      S.chartCandles = r.candles;
+      draw();
+    }
+  }catch(e){ console.warn('[TF] Geçmiş yüklenemedi:', e); }
 }
 
 // ─── Init ─────────────────────────────────────────────────
