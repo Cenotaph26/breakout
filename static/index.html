@@ -446,6 +446,69 @@ function onMsg(d){
 }
 
 // ── Candle merge ───────────────────────────────────────────────────────
+// ─── Canlı Frontend Trend Çizgisi ────────────────────────
+function computeLiveTL(candles, si, ei) {
+  if(ei - si < 8) return {res:null,sup:null,highs:[],lows:[]};
+  const N = 3; // her yanda pivot için bakılan mum sayısı
+  const highs=[], lows=[];
+
+  for(let i=N; i<=ei-si-N; i++){
+    const c=candles[si+i];
+    let ph=true, pl=true;
+    for(let j=i-N;j<=i+N;j++){
+      if(j===i) continue;
+      const n=candles[si+j];
+      if(n.high  >= c.high) ph=false;
+      if(n.low   <= c.low)  pl=false;
+    }
+    if(ph) highs.push({i:si+i, p:c.high});
+    if(pl) lows.push( {i:si+i, p:c.low });
+  }
+
+  const bestLine=(pts,type)=>{
+    if(pts.length<2) return null;
+    const recent = pts.slice(-5); // son 5 pivot
+    let best=null, bestScore=-Infinity;
+    for(let a=0;a<recent.length-1;a++){
+      for(let b=a+1;b<recent.length;b++){
+        const pa=recent[a], pb=recent[b];
+        const dI=(pb.i-pa.i)||1;
+        const slope=(pb.p-pa.p)/dI;
+        // Yön kontrolü
+        if(type==='res' && slope > 0.3) continue;
+        if(type==='sup' && slope < -0.3) continue;
+        // Geçerliliği kontrol: fiyat bu çizgiyi kırmış mı?
+        const tol=pa.p*0.004;
+        let broken=false;
+        for(let ci=pa.i+1;ci<=ei;ci++){
+          const c=candles[ci]; if(!c) continue;
+          const lp=pa.p+slope*(ci-pa.i);
+          if(type==='res' && c.close > lp+tol){broken=true;break;}
+          if(type==='sup' && c.close < lp-tol){broken=true;break;}
+        }
+        if(broken) continue;
+        // Temas sayısı
+        let tc=2;
+        for(const pt of pts){
+          if(pt===pa||pt===pb) continue;
+          const lp=pa.p+slope*(pt.i-pa.i);
+          if(Math.abs(pt.p-lp)<=pa.p*0.003) tc++;
+        }
+        const score=tc*8-(ei-pb.i)*0.3;
+        if(score>bestScore){bestScore=score;
+          best={type,i1:pa.i,p1:pa.p,i2:pb.i,p2:pb.p,slope,tc};}
+      }
+    }
+    return best;
+  };
+
+  return {
+    res: bestLine(highs,'res'),
+    sup: bestLine(lows,'sup'),
+    highs, lows
+  };
+}
+
 function mergeC(c,closed){ if(!c)return; const last=S.candles[S.candles.length-1]; if(last&&last.ts===c.ts)S.candles[S.candles.length-1]=c; else if(!last||c.ts>last.ts){S.candles.push(c);if(S.candles.length>600)S.candles.shift();} }
 function mergeChartC(c,closed){ if(!S.chartCandles)S.chartCandles=[]; const last=S.chartCandles[S.chartCandles.length-1]; if(last&&last.ts===c.ts)S.chartCandles[S.chartCandles.length-1]=c; else if(!last||c.ts>last.ts){S.chartCandles.push(c);if(S.chartCandles.length>600)S.chartCandles.shift();} }
 
@@ -465,7 +528,11 @@ function _draw(){
   const vis=cs.slice(si,ei+1); if(!vis.length) return;
   let lo=Infinity,hi=-Infinity;
   for(const c of vis){if(c.low<lo)lo=c.low;if(c.high>hi)hi=c.high;}
-  if(S.showLines&&S.lines){for(const tl of [S.lines.res,S.lines.sup]){if(!tl)continue;for(let idx=si;idx<=ei;idx++){const p=tl.p1+tl.slope*(idx-tl.i1);if(p<lo)lo=p;if(p>hi)hi=p;}}}
+  // Price range: pivot noktalarını dahil et
+  if(S.showLines){
+    for(const pt of(S.liveTL&&S.liveTL.highs||[])){if(pt.i>=si&&pt.i<=ei&&pt.p>hi)hi=pt.p;}
+    for(const pt of(S.liveTL&&S.liveTL.lows||[])){ if(pt.i>=si&&pt.i<=ei&&pt.p<lo)lo=pt.p;}
+  }
   const pad=(hi-lo)*0.09;lo-=pad;hi+=pad;if(hi<=lo)hi=lo+1;
   const PC=68,CW=W-PC,cw=CW/zoom,bw=Math.max(1,cw*0.62);
   const tY=p=>H-((p-lo)/(hi-lo))*H, tX=vi=>(vi+0.5)*cw;
@@ -480,7 +547,41 @@ function _draw(){
   ctx.strokeStyle='rgba(255,255,255,.04)';ctx.lineWidth=1;
   for(let p=ps;p<=hi;p+=st){const y=Math.round(tY(p))+.5;ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(CW,y);ctx.stroke();}
   // Trend lines
-  if(S.showLines){drawTL(S.lines.res,'#ff4466',si,ei,tX,tY,CW);drawTL(S.lines.sup,'#26d990',si,ei,tX,tY,CW);}
+  if(S.showLines){
+    // Canlı frontend hesaplama
+    const live=computeLiveTL(cs,si,ei);
+    S.liveTL=live;
+
+    const drawL=(tl,color,pivots)=>{
+      if(!tl)return;
+      const pAt=i=>tl.p1+tl.slope*(i-tl.i1);
+      const al=Math.min(0.88,0.4+tl.tc*0.1);
+      const hx=Math.round(al*255).toString(16).padStart(2,'0');
+      ctx.strokeStyle=color+hx; ctx.lineWidth=Math.min(2.2,0.8+tl.tc*0.25); ctx.setLineDash([]);
+      ctx.beginPath();
+      for(let idx=si;idx<=ei;idx++){const x=tX(idx-si),y=tY(pAt(idx));if(idx===si)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
+      ctx.stroke();
+      // Sola/sağa kesik uzatma
+      const yL=tY(pAt(si)),yR=tY(pAt(ei)),dp=(tX(ei-si)||1),sp=(yR-yL)/dp;
+      ctx.setLineDash([4,3]);ctx.globalAlpha=0.3;
+      ctx.beginPath();ctx.moveTo(0,yL-sp*tX(0));ctx.lineTo(CW,yR+sp*(CW-tX(ei-si)));ctx.stroke();
+      ctx.setLineDash([]);ctx.globalAlpha=1;
+      // Pivot daireleri
+      for(const pt of pivots){
+        if(pt.i<si||pt.i>ei)continue;
+        ctx.fillStyle=color;ctx.beginPath();ctx.arc(tX(pt.i-si),tY(pt.p),3.5,0,Math.PI*2);ctx.fill();
+      }
+      // Badge
+      const mid=Math.floor((Math.max(tl.i1,si)+Math.min(tl.i2,ei))/2);
+      if(mid>=si&&mid<=ei){
+        const mx=tX(mid-si),my=tY(pAt(mid)),lbl='T'+tl.tc,lw=ctx.measureText(lbl).width+8;
+        ctx.fillStyle=color+'33';ctx.fillRect(mx-lw/2,my-8,lw,16);
+        ctx.fillStyle=color;ctx.font='bold 9px JetBrains Mono';ctx.textAlign='center';ctx.fillText(lbl,mx,my+4);ctx.textAlign='left';
+      }
+    };
+    drawL(live.res,'#ff4466',live.highs||[]);
+    drawL(live.sup,'#26d990',live.lows||[]);
+  }
   // Position levels
   if(S.position){hLine(S.position.stop,'#ff4466','SL '+S.position.stop.toFixed(2),tY,CW);hLine(S.position.tp1,'#26d990','TP1 '+S.position.tp1.toFixed(2),tY,CW);hLine(S.position.entry_price,'#3d7fff','ENT '+S.position.entry_price.toFixed(2),tY,CW);}
   // Candles
@@ -571,7 +672,7 @@ function updPos(){const pos=S.position,sec=g('pos-section');if(!pos){sec.style.d
 function updRegime(){const b=g('hdr-regime');b.textContent=S.regime;b.className='rbadge r-'+S.regime;}
 
 function updTrendTags(){
-  const res=S.lines&&S.lines.res,sup=S.lines&&S.lines.sup;
+  const res=S.liveTL&&S.liveTL.res,sup=S.liveTL&&S.liveTL.sup;
   if(!res&&!sup) return;
   const rSlope=res?res.slope:0,sSlope=sup?sup.slope:0,avg=(rSlope+sSlope)/2;
   const tt=g('trend-tag');
