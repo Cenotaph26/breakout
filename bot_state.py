@@ -552,6 +552,41 @@ def get_trades_csv() -> str:
         w.writerow(asdict(t))
     return buf.getvalue()
 
+def update_live_trendlines(res_d: dict, sup_d: dict):
+    """Frontend'deki canlı trend çizgilerini sinyal motoruna aktar."""
+    global _res, _sup
+    n = len(_candle_objs)
+    if not n: return
+
+    def dict_to_tl(d, tl_type):
+        if not d: return None
+        try:
+            # Frontend: i1,p1,i2,p2 görüntü koordinatları
+            # Backend: candle_objs indeksine çevir
+            tail = 200
+            start_abs = max(0, n - tail)
+            i1_abs = d['i1'] + start_abs
+            i2_abs = d['i2'] + start_abs
+            # Sınır kontrolü
+            if i1_abs < 0 or i2_abs >= n or i1_abs >= n: return None
+            tl = TrendLine(
+                type=tl_type,
+                i1=i1_abs, p1=float(d['p1']),
+                i2=i2_abs, p2=float(d['p2']),
+            )
+            tl.touch_count = int(d.get('tc', 2))
+            tl.age = n - 1 - i2_abs
+            return tl
+        except Exception as e:
+            return None
+
+    new_res = dict_to_tl(res_d, 'res')
+    new_sup = dict_to_tl(sup_d, 'sup')
+
+    if new_res is not None: _res = new_res
+    if new_sup is not None: _sup = new_sup
+
+
 def reset_history():
     """TF değiştiğinde state'i sıfırla."""
     global _candles, _candle_objs, _ph, _pl, _res, _sup

@@ -449,7 +449,8 @@ function onMsg(d){
 // ─── Canlı Frontend Trend Çizgisi ────────────────────────
 function computeLiveTL(candles, si, ei) {
   if(ei - si < 8) return {res:null,sup:null,highs:[],lows:[]};
-  const N = 3; // her yanda pivot için bakılan mum sayısı
+  // SWING_N: kaç mum her yanda kontrol edilir (küçük=daha fazla pivot)
+  const N = 2;
   const highs=[], lows=[];
 
   for(let i=N; i<=ei-si-N; i++){
@@ -467,24 +468,26 @@ function computeLiveTL(candles, si, ei) {
 
   const bestLine=(pts,type)=>{
     if(pts.length<2) return null;
-    const recent = pts.slice(-5); // son 5 pivot
+    const recent = pts.slice(-6); // son 6 pivot
     let best=null, bestScore=-Infinity;
     for(let a=0;a<recent.length-1;a++){
       for(let b=a+1;b<recent.length;b++){
         const pa=recent[a], pb=recent[b];
         const dI=(pb.i-pa.i)||1;
         const slope=(pb.p-pa.p)/dI;
-        // Yön kontrolü
-        if(type==='res' && slope > 0.3) continue;
-        if(type==='sup' && slope < -0.3) continue;
-        // Geçerliliği kontrol: fiyat bu çizgiyi kırmış mı?
-        const tol=pa.p*0.004;
+        // Yön: sadece aşırı eğimlileri reddet (fiyat/mum bazında)
+        // Örn: 100 mum'da %5'ten fazla eğim ise reddet
+        const slopePct = Math.abs(slope) / pa.p;
+        if(slopePct > 0.001) continue; // %0.1/mum'dan fazla = çok sert
+        // Geçerliliği: fiyat kırılmış mı? (high/low kullan, close değil)
+        const tol=pa.p*0.005;
         let broken=false;
         for(let ci=pa.i+1;ci<=ei;ci++){
           const c=candles[ci]; if(!c) continue;
           const lp=pa.p+slope*(ci-pa.i);
-          if(type==='res' && c.close > lp+tol){broken=true;break;}
-          if(type==='sup' && c.close < lp-tol){broken=true;break;}
+          // high kırılımı direnç için; low kırılımı destek için
+          if(type==='res' && c.high > lp+tol){broken=true;break;}
+          if(type==='sup' && c.low  < lp-tol){broken=true;break;}
         }
         if(broken) continue;
         // Temas sayısı
@@ -492,9 +495,9 @@ function computeLiveTL(candles, si, ei) {
         for(const pt of pts){
           if(pt===pa||pt===pb) continue;
           const lp=pa.p+slope*(pt.i-pa.i);
-          if(Math.abs(pt.p-lp)<=pa.p*0.003) tc++;
+          if(Math.abs(pt.p-lp)<=pa.p*0.004) tc++;
         }
-        const score=tc*8-(ei-pb.i)*0.3;
+        const score=tc*10-(ei-pb.i)*0.2-Math.abs(slopePct)*1000;
         if(score>bestScore){bestScore=score;
           best={type,i1:pa.i,p1:pa.p,i2:pb.i,p2:pb.p,slope,tc};}
       }
@@ -581,6 +584,19 @@ function _draw(){
     };
     drawL(live.res,'#ff4466',live.highs||[]);
     drawL(live.sup,'#26d990',live.lows||[]);
+
+    // Çizgiler değiştiyse backend'e gönder (sinyal motoru güncellenir)
+    const tlKey = JSON.stringify({
+      r: live.res ? [live.res.i1,live.res.p1,live.res.i2,live.res.p2] : null,
+      s: live.sup ? [live.sup.i1,live.sup.p1,live.sup.i2,live.sup.p2] : null
+    });
+    if(tlKey !== S._lastTLKey){
+      S._lastTLKey = tlKey;
+      send('update_live_tl', {
+        res: live.res ? {i1:live.res.i1,p1:live.res.p1,i2:live.res.i2,p2:live.res.p2,tc:live.res.tc,slope:live.res.slope} : null,
+        sup: live.sup ? {i1:live.sup.i1,p1:live.sup.p1,i2:live.sup.i2,p2:live.sup.p2,tc:live.sup.tc,slope:live.sup.slope} : null,
+      });
+    }
   }
   // Position levels
   if(S.position){hLine(S.position.stop,'#ff4466','SL '+S.position.stop.toFixed(2),tY,CW);hLine(S.position.tp1,'#26d990','TP1 '+S.position.tp1.toFixed(2),tY,CW);hLine(S.position.entry_price,'#3d7fff','ENT '+S.position.entry_price.toFixed(2),tY,CW);}
@@ -748,7 +764,18 @@ function applyConfig(){send('update_config',{params:{trend_filter_window:parseIn
 // TF
 const TF_IVS={'1m':'1m','15m':'15m','1h':'1h','2h':'2h','4h':'4h','1d':'1d'};
 function setTF(tf){if(S.tf===tf)return;S.tf=tf;g('hdr-tf').textContent=tf;Object.keys(TF_IVS).forEach(t=>{const b=g('tf'+t);if(b)b.classList.toggle('act',t===tf);});S.chartCandles=[];draw();if(_bnWs)_bnWs.close();setTimeout(connectBinanceWS,200);if(tf!=='15m')fetchChartHistory(tf);}
-async function fetchChartHistory(tf){try{const r=await fetch(`/api/klines?interval=${TF_IVS[tf]||tf}&limit=200`).then(r=>r.json());if(r&&r.candles){S.chartCandles=r.candles;draw();}}catch(e){console.warn('[TF] geçmiş yüklenemedi');}}
+let _chartHistTimer=null;
+async function fetchChartHistory(tf){
+  // Debounce: 500ms içinde tekrar çağrılırsa iptal et
+  if(_chartHistTimer) clearTimeout(_chartHistTimer);
+  _chartHistTimer=setTimeout(async()=>{
+    try{
+      const r=await fetch(`/api/klines?interval=${TF_IVS[tf]||tf}&limit=200`).then(r=>r.json());
+      if(r&&r.candles){S.chartCandles=r.candles;draw();}
+    }catch(e){console.warn('[TF] geçmiş yüklenemedi');}
+    _chartHistTimer=null;
+  },500);
+}
 
 // Backtest
 async function runBacktest(){

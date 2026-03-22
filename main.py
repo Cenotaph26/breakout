@@ -369,6 +369,11 @@ async def ws_endpoint(ws: WebSocket):
                         except Exception as e:
                             logger.warning(f"Demo close order: {e}")
                     await ws.send_text(json.dumps({"event":"position_closed",**res}))
+                elif cmd == "update_live_tl":
+                    # Frontend'deki canlı trend çizgilerini sinyal motoruna güncelle
+                    res_d = data.get("res")
+                    sup_d = data.get("sup")
+                    state.update_live_trendlines(res_d, sup_d)
                 elif cmd == "candle_from_browser":
                     c = data.get("candle")
                     if c and bool(c.get("closed", False)):
