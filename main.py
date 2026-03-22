@@ -373,6 +373,17 @@ async def ws_endpoint(ws: WebSocket):
                     c = data.get("candle")
                     if c:
                         state.push_candle(c, is_closed=bool(c.get("closed", False)))
+                elif cmd == "set_interval":
+                    # Kullanıcı TF değiştirdi → yeni interval ile geçmişi yükle
+                    new_iv = data.get("interval", "15m")
+                    valid = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","1d"]
+                    if new_iv in valid:
+                        global INTERVAL, _last_closed_ts
+                        INTERVAL = new_iv
+                        _last_closed_ts = 0
+                        state.reset_history()
+                        logger.info(f"[TF] Interval değişti: {new_iv}")
+                        asyncio.create_task(_init_history())
                 elif cmd == "update_config":
                     state.update_config(regime=data.get("regime"), params=data.get("params"))
                 elif cmd == "manual_order":

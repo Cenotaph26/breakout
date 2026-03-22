@@ -120,6 +120,7 @@ header{background:var(--bg1);border-bottom:1px solid var(--border);display:flex;
 
 <header>
   <div class="logo">ETH<span>/USDT</span></div>
+  <div style="font-size:9px;color:var(--blue);background:#001833;border:1px solid var(--blue2);border-radius:4px;padding:2px 8px;font-family:var(--font)" id="hdr-tf">15m</div>
   <div class="sep"></div>
   <div class="ticker-price" id="hdr-price">—</div>
   <div class="ticker-change" id="hdr-chg">—</div>
@@ -160,6 +161,14 @@ header{background:var(--bg1);border-bottom:1px solid var(--border);display:flex;
         </div>
       </div>
       <div class="c-ctrl">
+        <span style="display:flex;gap:3px;margin-right:4px;border-right:1px solid var(--border2);padding-right:6px">
+          <button class="cbtn" id="tf1m"  onclick="setTF('1m')">1m</button>
+          <button class="cbtn act" id="tf15m" onclick="setTF('15m')">15m</button>
+          <button class="cbtn" id="tf1h"  onclick="setTF('1h')">1h</button>
+          <button class="cbtn" id="tf2h"  onclick="setTF('2h')">2h</button>
+          <button class="cbtn" id="tf4h"  onclick="setTF('4h')">4h</button>
+          <button class="cbtn" id="tf1d"  onclick="setTF('1d')">1D</button>
+        </span>
         <button class="cbtn act" id="z100" onclick="setZoom(100)">100</button>
         <button class="cbtn" id="z200" onclick="setZoom(200)">200</button>
         <button class="cbtn" id="z300" onclick="setZoom(300)">300</button>
@@ -771,7 +780,8 @@ let _bnWs=null, _bnRetry=0, _bnConnected=false;
 
 function connectBinanceWS(){
   const sym='ethusdt';
-  const url=`wss://fstream.binancefuture.com/stream?streams=${sym}@kline_15m/${sym}@ticker`;
+  const iv = S.tf || '15m';
+  const url=`wss://fstream.binancefuture.com/stream?streams=${sym}@kline_${iv}/${sym}@ticker`;
   try{ _bnWs=new WebSocket(url); }
   catch(e){ console.warn('[BN-WS]',e); _bnRetryFn(); return; }
 
@@ -821,6 +831,36 @@ function _bnRetryFn(){
   const d=Math.min(Math.pow(2,_bnRetry)*1000,60000);
   console.log(`[BN-WS] ${d/1000}sn sonra yeniden bağlanıyor`);
   setTimeout(connectBinanceWS, d);
+}
+
+// ─── Timeframe ────────────────────────────────────────────
+const TF_INTERVALS = {
+  '1m':'1m','15m':'15m','1h':'1h','2h':'2h','4h':'4h','1d':'1d'
+};
+const TF_CLOSE_MS = {
+  '1m':60000,'15m':900000,'1h':3600000,'2h':7200000,'4h':14400000,'1d':86400000
+};
+S.tf = '15m'; // aktif timeframe
+
+function setTF(tf) {
+  if (S.tf === tf) return;
+  S.tf = tf;
+  // Header badge güncelle
+  const hdrTf = document.getElementById('hdr-tf'); if(hdrTf) hdrTf.textContent=tf;
+  // Buton stillerini güncelle
+  Object.keys(TF_INTERVALS).forEach(t => {
+    const btn = document.getElementById('tf'+t);
+    if(btn) btn.classList.toggle('act', t === tf);
+  });
+  // Candles'ı temizle — yeni TF verisi gelene kadar boş
+  S.candles = []; S.lines = {res:null,sup:null}; S.position=null;
+  draw();
+  // Backend'e TF değişikliğini bildir
+  send('set_interval', {interval: TF_INTERVALS[tf]});
+  // Aynı zamanda Binance WS'i yeniden bağla (yeni stream)
+  if(_bnWs) { _bnWs.close(); }
+  // connectBinanceWS içindeki stream URL TF'e göre dinamik olacak
+  setTimeout(connectBinanceWS, 300);
 }
 
 // ─── Init ─────────────────────────────────────────────────

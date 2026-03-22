@@ -540,6 +540,18 @@ def get_trades_csv() -> str:
         w.writerow(asdict(t))
     return buf.getvalue()
 
+def reset_history():
+    """TF değiştiğinde state'i sıfırla."""
+    global _candles, _candle_objs, _ph, _pl, _res, _sup
+    global _last_line_update, _regime_counter, _position
+    _candles.clear(); _candle_objs.clear()
+    _ph.clear(); _pl.clear()
+    _res = _sup = None
+    _last_line_update = 0; _regime_counter = 0
+    _position = None
+    _log("Geçmiş sıfırlandı (TF değişimi)", "INFO")
+
+
 def start_bot():
     global _bot_running, _bot_paused
     _bot_running = True; _bot_paused = False
